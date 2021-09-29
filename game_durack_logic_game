@@ -1,0 +1,311 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# 
+# В этой части  создаются рукописные функции, которые создают имитацию игры человека с компьютером.
+# Собираются модели нейронных сетей, для распознавания игральных карт, затем функция которая совмещает выводы нейроных моделей в одну карту, следующим шагом создается функция логики игры и в заключении функция которая совмещает это все вместе с видео и выводится результат игры.
+
+
+#импорт нужных модулей
+
+import tensorflow
+from tensorflow.keras.models import Sequential, Model #сети
+from tensorflow.keras.layers import Dense, Flatten, Dropout, BatchNormalization, Input, Reshape #базовые слои 
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, UpSampling2D, Conv2DTranspose
+from tensorflow.python.keras.layers.advanced_activations import LeakyReLU
+from tensorflow.keras.optimizers import Adam, RMSprop, Adadelta
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import utils #утилиты для to_categorical
+from tensorflow.keras.callbacks import LambdaCallback, ModelCheckpoint, EarlyStopping
+
+import cv2 #модуль OPENCV
+import numpy                                                                                                                               as np
+import random                                                                          
+import matplotlib.pyplot as plt #для отрисовки графиков при обучении
+from PIL import Image #для отрисовки изображений
+import os #для работы с файлами
+import re
+
+
+# Вводные данные для работы сеток с изображениями карт
+
+
+#Вводные данные
+batch_size = 56
+img_height = 110
+img_width = 76
+channel = 3
+
+
+# Блок определения функций для дальнейшей работы (их можно было вывести в другой ноутбук и подгружать как модули)
+
+#функция для настройки изображения камеры под рамку карты нужного размера для большей точности
+def customization_on_frame():
+    #import cv2 
+
+    cap = cv2.VideoCapture(0)
+    i = 0
+    print('Когда завершите настройку нажмите на клавишу <q>')
+    while(cap.isOpened()): 
+        ret,frame = cap.read()         
+        #Уменьшаю размер фрейма до размера изображения которое входит в сеть для распознавания
+        width = int(frame.shape[1]*25/100)
+        height = int(frame.shape[0]*25/100)
+        dim = (width,height)
+        frame_re=cv2.resize(frame, dim)
+        frame_re = frame_re[7:117, 40:116]    
+
+        #воспроизвожу изображение для настройки под рамку        
+        cv2.imshow('frame',frame_re)        
+
+        #Выход    
+        if cv2.waitKey(1) & 0xFF  == ord('q'):     
+            print('Out from customization')
+            
+            break 
+    cap.release() 
+    cv2.destroyAllWindows() 
+    
+    
+    
+    
+#Изменю функцию которая выше, чтобы выход функции был предикт карты полностью
+def what_card(np_img, model_r,model_s,img_height = 110,img_width = 76, channel = 3):
+  
+    rang_list = ['6','7','8','9','10','J','Q','K','A','No']
+    suit_list = ['card','club','diamond','heart','spade']
+    
+    cards = []
+
+    #Predict rang
+    predict_rang = model_r.predict(np_img[None,])[0]  
+    rang = rang_list[np.argmax(predict_rang)]
+
+    tmp = predict_rang[np.argmax(predict_rang)]
+    if tmp <0.91:
+        print('Это достоинство карты ниже 90%.')  
+        print('Ранг карты в цифре из argmaxa: ',tmp)
+    print()
+
+
+    #Predict suit
+    predict_suit = model_s.predict(np_img[None,])[0]
+    suit = suit_list[np.argmax(predict_suit)]
+
+    tmp_s = predict_suit[np.argmax(predict_suit)]
+    if tmp_s <0.91:
+        print('Эта масть карты по распознаванию ниже 90%.')  
+        print('Масть карты в цифре из argmaxa: ',tmp_s)
+    print()   
+
+    card = rang + '_' + suit
+    plt.imshow(image.array_to_img(np_img))
+    plt.show()  
+    #print(card)
+        
+    return card
+    #cards.append(card)    
+    
+    
+#Функция создания моделей масти и достоинства карт
+def creat_models(path, model_rang,weight_rang,model_suit,weight_suit):
+    #Загрузка модели из колаба и создание модели rang для распознавания  достоинства карт
+    model_rang = tensorflow.keras.models.load_model(path + 'model_rang/'+ model_rang)
+    #Загрузка весов для модели rang из колаба и подгрузка в модель
+    model_rang.load_weights(path + 'model_rang/' + weight_rang)
+
+    #Загрузка модели из колаба и создание модели suit для распознавания масти карт
+    model_suit = tensorflow.keras.models.load_model(path + 'model_suit/' + model_suit)
+    #Загрузка весов из колаба для модели suit и подгрузка в модель
+    model_suit.load_weights(path + 'model_suit/' + weight_suit)
+    
+    return model_rang,model_suit
+
+
+# Эта функция запускается когда первый раз настраиваешь камеру подразмер карты 110х76. То есть изображение карты лежало полностью в экране
+
+
+#настройка рамки экрана для лучшей работы
+customization_on_frame() 
+
+
+# Создаю модели из архитектур моделей и весов, которые были получены в колабе, и загружены на локальный компьютер
+
+
+# Все данные для создания моделей нейронок
+path = '/home/mel/Документы/DP/my_kyr/' #путь куда нужно загрузить данные для создания моделей
+model_rang = 'rang_card_model_Tr.h5' # модель по распознаванию достоинства карт
+weight_rang = 'm_3_weights26_04 -28-0.864341_lr=0.000001.h5' # веса по распознаванию достоинства карт
+
+model_suit = 'suit_card_model.h5' #модель по распознаванию масти карт
+weight_suit = 'suit-weights_1_04-01-0.989333_lr=0.0000001.h5'  
+
+
+#Функция создания моделей
+rang_card_model_Tr,suit_card_model = creat_models(path, model_rang,weight_rang,model_suit,weight_suit)
+
+
+# Функуция логики игры в Дурака (простейшая логика, но основная), для демонстрации распознавания карт и применение полученных данных
+#Функция простой логики игры в Дурака
+def logic_game(cards, player):
+    ########################################Блок парсинга#######################################################
+    rang = ['6','7','8','9','10','J','Q','K','A']
+    rang_index = list(map(lambda x: rang.index(x), rang))#индексы ранга по старшенству
+
+    ### Блок по разбивке карт на ранг и масть
+    temp_suit_comp = []
+    temp_suit_player = []
+    #набор карт комп перевожу в str для разделения на масти
+    temp_suit_comp = list(map(lambda x: x.split('_')[1],cards )) #выделяю масть карт комп
+    temp_rang_comp = list(map(lambda x: x.split('_')[0],cards )) #выделяю достоинство карт комп
+    #print(temp_suit_comp, temp_rang_comp)    
+    #
+    #набор карт plaer
+    temp_suit_player = list(map(lambda x: x.split('_')[1],player ))   #выделяю масть карт player
+    temp_rang_player = list(map(lambda x: x.split('_')[0],player ))   #выделяю достоинство карт player
+    #print(temp_suit_player[0], temp_rang_player)
+    #print('-------------------------------------------------')
+
+
+###############Блок кода если нет масти у компа или есть#############################
+
+    rang_comp = []
+    index_rang_comp = []
+    for i in range(len(temp_suit_comp)):
+        if temp_suit_player[0] == temp_suit_comp[i]:
+
+            rang_comp.append(temp_rang_comp[i])#получил из набора карт компа карты соответствующей масти
+            #print('rang_comp', rang_comp)  #проверка
+            suit_comp = temp_suit_comp[i] #масть выбраных карт таких как у player
+            #print('suit_comp', suit_comp)  #проверка
+    rang_comp = sorted(rang_comp,reverse = True) #сортировка достоинства карт
+
+    #Теперь нужно по этим достоинствам карт получить индексы старшинтсва из rang
+    for j in range(len(rang_comp)):
+        index_rang_comp.append(rang.index(rang_comp[j]))  #получил индексы одинаковой масти, с игроком,
+        #index_rang_comp = sorted(index_rang_comp, reverse=False)                                                 #из набора карт компьютера. По индексам буду сравнивать
+
+    #print(rang_comp, suit_comp) #Проверка
+    #index_rang_comp = sorted(index_rang_comp, reverse=True) #проверка
+    #print('Индексы карт компа относительно достоинства карт из rang',index_rang_comp) #Проверка
+
+    #Получаю индекс карты player
+    index_rang_player = rang.index(temp_rang_player[0]) #индексы набора карты игрока в rang
+    #print('Индекс карты player относительно достоинства карт из rang',index_rang_player)
+    #print('-----------------------------------------------------')
+
+
+
+    ###################Блок - бита ли карта компьютером логика########################
+
+    #Если не такой масти у компа как у player, тогда в набор карт комп добавляется карта
+    if temp_suit_player[0] not in temp_suit_comp:        
+        print('В наборе Компа нет такой масти и козыря, поэтому Комп забрал карту')
+        cards.append(player[0])
+        print('##############################################################')
+        print('Так как Комп забрал карту смотрим на его набор карт:\n ',cards)
+        print('##############################################################')
+    #Проходим по картам такой же масти как у player и смотрим может ли быть бита компом или нет
+    on_beat = False #логический показатель бита ли карта
+    for i in range(len(index_rang_comp)):
+        if (temp_suit_player[0] == suit_comp)&(index_rang_player < index_rang_comp[i]) :
+            on_beat = True 
+            print('########################################################')
+            print('карта бита компом картой',rang_comp[i] + '_' + suit_comp)
+            print('########################################################')
+            if on_beat:
+                break
+
+        if (temp_suit_player[0] == suit_comp)&(index_rang_player > index_rang_comp[i]):  
+            print('#########################################################')
+            print('Комп не побил карту',player[0],'поэтому Комп забрал карту')
+            temp_card = player[0]
+            cards.append(temp_card)
+            print('Так как Комп забрал карту смотрим на его набор карт:\n ',cards)
+            print('#########################################################')
+            break
+    
+    
+#################################################################################################
+
+
+# Основная функция где собраны все функции для реализации Дипломного проэкта на тему:  **"  Распознавание игральных карт и игры в Дурака с ботом"**
+
+
+#Функция по распознаванию и отобрражению карт
+def video_game():
+    cap = cv2.VideoCapture(0)
+    i = 1
+    y = 0
+    cards = []
+    bags = []
+    player = []
+    while(cap.isOpened()): 
+        ret,frame = cap.read() 
+        cv2.putText(frame,'Frame for control predictions cards!',(30,30),cv2.FONT_HERSHEY_SIMPLEX,0.6,(30,105,210),2)
+        
+        cv2.putText(frame,'diamond-bubna',(30,60),cv2.FONT_HERSHEY_COMPLEX_SMALL,0.7,(30,105,210),1)
+        cv2.putText(frame,'spade-piki',(30,90),cv2.FONT_HERSHEY_COMPLEX_SMALL,0.7,(30,105,210),1)
+        cv2.putText(frame,'heart-chirva',(30,120),cv2.FONT_HERSHEY_COMPLEX_SMALL,0.7,(30,105,210),1)
+        cv2.putText(frame,'club-kresti',(30,150),cv2.FONT_HERSHEY_COMPLEX_SMALL,0.7,(30,105,210),1)
+        cv2.imshow('frame',frame) #---------> Здесь вставил для пробы
+        #--------------------------------------------------
+        #Уменьшаю размер фрейма до размера изображения которое входит в сеть для распознавания
+        #print(frame.shape[1]*25/100) #400  - высота
+        #print(frame.shape[0]*30/100) #640  - ширина
+        width = int(frame.shape[1]*25/100)
+        height = int(frame.shape[0]*25/100)
+        dim = (width,height)
+        frame_re=cv2.resize(frame, dim)
+        frame_re = frame_re[7:117, 40:116]
+
+        #cv2.imshow('frame',frame_re)--------> Вот здесь убрал для пробы
+        #Изменяю цвета из bgr в rgb
+        b,g,r = cv2.split(frame_re)
+        frame_re = cv2.merge([r,g,b])    
+
+        #-------------
+        # Блок кода сбора карт для comp_player
+        i += 1    
+        if len(cards) < 6:                    #Подставить чтобы в колоде не повторялись карты
+            if i % 200 == 0 & i < 1200:       #temp_cards not in cards:
+                temp_cards = what_card(frame_re,rang_card_model_Tr,suit_card_model)
+                if temp_cards not in cards:
+                    if (temp_cards != 'No_card'):
+                        cards.append(temp_cards)
+                        print('Набор карт компа',cards)
+                        print(len(cards))
+                        if len(cards) == 6:
+                            print('Набор карт компьютера полон,положите карту и')
+                            print('нажмите клавишу '"С"'  для получения карты игроку: ')  
+                            continue                     
+                    else:
+                        print('Это не карта')           
+                        bags.append(temp_cards)  
+                        
+                    print(cards) 
+                    print(bags)
+                    
+        
+        
+
+        if cv2.waitKey(3)& 0xFF == ord('c'): 
+            go_card = what_card(frame_re,rang_card_model_Tr,suit_card_model)
+            player.append(go_card)    
+            print('Ход игрока ',player)
+            if len(player) == 1:
+                continue
+
+
+        #Выход    
+        if cv2.waitKey(33) & 0xFF == ord('q'): 
+            logic_game(cards, player)
+            break 
+    cap.release() 
+    cv2.destroyAllWindows() 
+
+
+# Демонстрация
+
+video_game()
